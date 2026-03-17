@@ -5,6 +5,7 @@ from datetime import datetime
 # ---------------- Streamlit UI 기본 설정 ---------------- #
 st.set_page_config(page_title="출결 분석 프로그램", layout="wide")
 
+# 시스템에서 기본적으로 숨김/제외 처리할 6명
 DEFAULT_EXCLUDED = ['김기돈', '여기대', '임덕상', '김효정', '김운철', '윤희주']
 
 st.title("⏱️ 일일 근태 이상 체크 프로그램 (요약 버전)")
@@ -42,28 +43,39 @@ if uploaded_file is not None:
         else:
             df = pd.read_excel(uploaded_file)
             
-        # 예외 대상자 설정 로직
+        # ==========================================
+        # 1. 예외 대상자 처리 (기본 6명은 숨김)
+        # ==========================================
         if '성명' in df.columns:
+            # 기본 제외자 6명을 데이터에서 아예 삭제 (UI에도 안 보이게 함)
+            df = df[~df['성명'].isin(DEFAULT_EXCLUDED)]
+            # 남은 사람들의 이름만 추출하여 검색 후보로 제공
             unique_names = sorted(df['성명'].dropna().unique().tolist())
         else:
             unique_names = []
 
-        default_selection = [name for name in DEFAULT_EXCLUDED if name in unique_names]
+        st.sidebar.subheader("🚫 추가 예외 대상자")
+        st.sidebar.write("이름을 입력(검색)하여 대상자를 추가로 제외할 수 있습니다.")
         
-        st.sidebar.subheader("🚫 예외 대상자 설정")
-        excluded_names = st.sidebar.multiselect(
-            "출력에서 제외할 직원",
+        # 기본 선택값 없이 빈칸으로 제공 (직접 타이핑하여 검색/선택)
+        additional_excluded = st.sidebar.multiselect(
+            "제외할 직원 이름 검색",
             options=unique_names,
-            default=default_selection
+            default=[] 
         )
         
+        # ==========================================
+        # 2. 데이터 분석 로직
+        # ==========================================
         with st.spinner("근태 데이터를 요약 분석 중입니다..."):
             
-            if '성명' in df.columns:
-                filtered_df = df[~df['성명'].isin(excluded_names)]
+            # 검색해서 추가한 인원 필터링
+            if '성명' in df.columns and additional_excluded:
+                filtered_df = df[~df['성명'].isin(additional_excluded)]
             else:
                 filtered_df = df.copy()
             
+            # 주말 및 공휴일 제외 처리
             if '요일' in filtered_df.columns:
                 filtered_df = filtered_df[~filtered_df['요일'].isin(['토요일', '일요일'])]
             
@@ -90,6 +102,7 @@ if uploaded_file is not None:
                 d[name].append(val)
             
             for index, row in filtered_df.iterrows():
+                # 휴가자 제외
                 has_leave = row['휴가'].strip().lower() != 'null' and row['휴가'].strip() != ''
                 if has_leave:
                     continue
@@ -97,7 +110,7 @@ if uploaded_file is not None:
                 name = row.get('성명', '알수없음')
                 date_str = str(row.get('근무일자', ''))
                 
-                # 날짜에서 'n일'만 추출 (예: 2026.02.05 -> 5일)
+                # 날짜에서 'n일'만 추출
                 try:
                     clean_date = date_str.replace('-', '.').replace('/', '.')
                     day_val = int(clean_date.split('.')[-1])
@@ -111,7 +124,7 @@ if uploaded_file is not None:
                 no_in = (in_time_str == '' or in_time_str == ':' or 'nan' in in_time_str.lower())
                 no_out = (out_time_str == '' or out_time_str == ':' or 'nan' in out_time_str.lower())
                 
-                # 1. 누락 여부 분류 (출근/퇴근 각각 따로)
+                # 누락 여부 분류
                 if no_in and no_out:
                     add_to_dict(dict_all_missing, name, f"{day}, 출퇴근 모두 누락")
                     cnt_all += 1
@@ -122,7 +135,7 @@ if uploaded_file is not None:
                     add_to_dict(dict_out_missing, name, f"{day}, 퇴근 누락")
                     cnt_out += 1
                 else:
-                    # 2. 지각/조기퇴근 분류
+                    # 지각/조기퇴근 분류
                     try:
                         in_time = datetime.strptime(in_time_str, '%H:%M').time()
                         out_time = datetime.strptime(out_time_str, '%H:%M').time()
@@ -141,13 +154,12 @@ if uploaded_file is not None:
                     except Exception:
                         pass
                         
-            # 문자열 조합 함수 (예: AAA (1일, 퇴근 누락 / 2일, 퇴근 누락))
+            # 문자열 조합 함수
             def build_str(d):
                 if not d:
                     return "없음"
                 return ",  ".join([f"{k} ({' / '.join(v)})" for k, v in d.items()])
 
-            # 표 생성을 위한 데이터 조립 (행을 5개로 완벽히 분리)
             summary_data = [
                 {
                     "구분": "출근 누락",
@@ -179,7 +191,7 @@ if uploaded_file is not None:
             summary_df = pd.DataFrame(summary_data)
 
         # ==========================================
-        # 화면 출력 (요약표)
+        # 3. 화면 출력 (요약표)
         # ==========================================
         st.subheader("📋 근태 이상 요약 결과")
         st.dataframe(
